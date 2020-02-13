@@ -1,0 +1,29 @@
+## Interface: 11303
+## X-Min-Interface: 11302
+## Title: Dungeon Tracker
+## Notes: Tracks experience, loot, and gold for each instance run.
+## Dependencies:
+## OptionalDeps: Ace3, LibStub, CallbackHandler-1.0, LibDataBroker-1.1
+## SavedVariables: DungeonTrackerDB
+## SavedVariablesPerCharacter: 
+## LoadOnDemand: 0
+## DefaultState: enabled
+## Author: Arbixal
+## X-Website: https://github.com/arbixal/dungeon-tracker
+## X-Curse-Project-ID: ???
+## Version: 1.13.30
+
+Libs\LibStub\LibStub.lua
+Libs\CallbackHandler-1.0\CallbackHandler-1.0.xml
+Libs\AceAddon-3.0\AceAddon-3.0.xml
+Libs\AceEvent-3.0\AceEvent-3.0.xml
+Libs\AceDB-3.0\AceDB-3.0.xml
+Libs\AceDBOptions-3.0\AceDBOptions-3.0.xml
+Libs\AceConsole-3.0\AceConsole-3.0.xml
+Libs\AceGUI-3.0\AceGUI-3.0.xml
+Libs\AceLocale-3.0\AceLocale-3.0.xml
+Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
+
+Locale\Locale.xml
+DungeonTrackerLog.xml
+DungeonTracker.lua
