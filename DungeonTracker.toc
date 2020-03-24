@@ -26,4 +26,5 @@ Libs\LibDataBroker-1.1\LibDataBroker-1.1.lua
 
 Locale\Locale.xml
 DungeonTrackerLog.xml
+data.lua
 DungeonTracker.lua

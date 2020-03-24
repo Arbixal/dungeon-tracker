@@ -19,10 +19,9 @@
 --    * Share Alike. If you alter, transform, or build upon this work, you may distribute the resulting work only under the same or similar license to this one.
 --
 
--- TODO: Add filters to table (instance, just my character)
+-- TODO: Add display profiles (Leveling, Gold Farming, Cloth Farming, Mining, etc)
 -- TODO: Fix date formatting
 -- TODO: Track reset timers
--- TODO: Add instance level ranges
 -- TODO: Be able to delete log entries
 -- TODO: Detailed view of instance run (loot, boss kills, etc.)
 -- TODO: Test solo run with boss kills
@@ -32,7 +31,6 @@
 -- TODO: Do something more meaningful with data broker (reset timers, combat log on, current instance, etc)
 -- TODO: Add configuration options
 -- TODO: Trim data footprint (archive old runs to just summary?)
--- TODO: Add to git repo
 -- TODO: Better item handling (vendor trash counts to gold, etc)
 
 -- Globals
@@ -55,6 +53,7 @@ local disabled_text = RED_FONT_COLOR_CODE..VIDEO_OPTIONS_DISABLED..FONT_COLOR_CO
 local enabled_icon  = "Interface\\AddOns\\"..ADDON_NAME.."\\enabled"
 local disabled_icon = "Interface\\AddOns\\"..ADDON_NAME.."\\disabled"
 
+local DTInstanceInfo = _G.DTInstanceInfo
 local db
 local dbGlobal
 local defaults = {
@@ -68,7 +67,12 @@ local defaults = {
 			hide = false,
 			minimapPos = 250,
 			radius = 80,
-		},
+        },
+        vendorTrashLevel = 0,
+        filterOptions = {
+            onlyShowCurrentCharacter = false,
+            instanceFilter = nil
+        },
     },
     global = {
         dungeonLog = {},
@@ -134,6 +138,9 @@ function DT:OnInitialize()
 
     self:RegisterEvents(
         "BOSS_KILL",
+        "ENCOUNTER_START",
+        "ENCOUNTER_END",
+
         "CHAT_MSG_LOOT",            -- loot gain
         "CHAT_MSG_MONEY",           -- money gain
         "PLAYER_XP_UPDATE",         -- xp update
@@ -146,6 +153,8 @@ function DT:OnInitialize()
     
         "UPDATE_INSTANCE_INFO",     -- in dungeon/raid instance
         "PLAYER_ENTERING_WORLD",    -- login in the middle of instance
+
+        "COMBAT_LOG_EVENT_UNFILTERED",
 
         "CHAT_MSG_SYSTEM"
     )
@@ -169,21 +178,146 @@ function DT:RegisterEvents(...)
     end
 end
 
-function DT:BOSS_KILL(encounterId, encounterName)
+function DT:EnsureBossEncounterExists(encounterId, encounterName)
+    dungeonLog = self:ActiveDungeon()
+
+    if not dungeonLog then return nil end
+
+    dungeonLog.encounters[encounterID] = {
+        id = encounterId,
+        name = encounterName,
+        bosses = {},
+        timeStart = GetServerTime()
+    }
+
+    return dungeonLog.encounters[encounterID]
+end
+
+function DT:BOSS_KILL(event, encounterId, encounterName)
     if not self:ActiveDungeon() then return end
 
     self:Debug("BOSS_KILL fired! encounterID="..encounterID..", name="..encounterName)
-    dbGlobal.dungeonLog[self.DungeonId].bosses[encounterID] = {
-        name = encounterName,
-        timeKill = GetTime()
-    }
+    bossEncounter = self:EnsureBossEncounterExists(encounterID, encounterName)
+
+    if not bossEncounter then return end
+
+    bossEncounter.timeKill = GetServerTime()
+end
+
+--- Ways an encounter can start:
+--       ENCOUNTER_START event
+--       UNIT_HEALTH event for boss npc
+--       boss yell
+function DT:StartEncounter(encounterId, name)
+    self.EncounterId = encounterId
+    bossEncounter = self:EnsureBossEncounterExists(encounterId, name)
+    bossEncounter.attempts = bossEncounter.attempts + 1
+end
+
+--- Ways an encounter can end:
+--       ENCOUNTER_END event
+--       BOSS_KILL event for only boss
+--       UNIT_DEAD event for only boss
+--       boss yell
+function DT:EndEncounter(encounterId, name, success)
+    bossEncounter = self:EnsureBossEncounterExists(encounterId, name)
+    bossEncounter.success = success
+    self.EncounterId = nil
+end
+
+function DT:ENCOUNTER_START(event, encounterId, name, difficulty, size)
+    if not self:ActiveDungeon() then return end
+
+    if self:ActiveBossEncounter() then return end
+
+    self:Debug("ENCOUNTER_START fired! encounterID="..encounterId..", name="..name)
+    self:StartEncounter(encounterId, name)
+end
+
+function DT:ENCOUNTER_END(event, encounterId, name, difficulty, size, success)
+    if not self:ActiveDungeon() then return end
+
+    self:Debug("ENCOUNTER_END fired! encounterID="..encounterId..", name="..name..", success="..success)
+    self:EndEncounter(encounterId, name, success)
+end
+
+local function GetNPCIdFromGuid(guid)
+    local first3 = tonumber("0x"..strsub(guid, 3, 5));
+    local unitType = bit.band(first3, 0x007);
+    if ((unitType == 0x003) or (unitType == 0x005)) then
+        return tonumber("0x"..strsub(guid, 6, 10));
+    else
+        return nil;
+    end
+end
+
+function DT:COMBAT_LOG_EVENT_UNIT_DIED(destGUID, destName)
+    dungeonLog = self:ActiveDungeon()
+    if not dungeonLog then return end
+
+    dungeonInfo = _G.DTInstanceInfo[dungeonLog.instance]
+    if not dungeonInfo then return end
+    
+    bossEncounter = self:ActiveBossEncounter()
+    if not bossEncounter then return end
+
+    local encounterInfo = dungeonInfo.encounters[bossEncounter.id]
+    if not encounterInfo then return end
+
+    local localBossName = destName
+    local NPCID = GetNPCIdFromGuid(destGUID)
+    local encounterBoss = encounterInfo.bosses[NPCID]
+    if encounterBoss then
+        self:Debug("Valid NPCID found... - Match on "..encounterBoss.name)
+        bossEncounter.bosses[NPCID] = {
+            name = localBossName,
+            timeKill = GetServerTime()
+        }
+        if select("#", encounterInfo.bosses) <= 1 then
+            self:Debug("Only boss killed ... ending the encounter")
+            self:EndEncounter(bossEncounter.id, bossEncounter.name, true)
+        end
+    end
+end
+
+function DT:COMBAT_LOG_EVENT_UNIT_HEALTH(destGUID, destName)
+    dungeonLog = self:ActiveDungeon()
+    if not dungeonLog or self:ActiveBossEncounter() then return end
+
+    dungeonInfo = _G.DTInstanceInfo[dungeonLog.instance]
+    if not dungeonInfo then return end
+
+    local NPCID = GetNPCIdFromGuid(destGUID)
+    for key, value in pairs(dungeonInfo.encounters) do
+        if value.bosses[NPCID] then
+            self:Debug("Starting Encounter by UNIT_HEALTH encounterId="..key..", name="..value.name)
+            self:EnsureBossEncounterExists(key, value.name)
+            self.EncounterId = key
+        end
+    end
+end
+
+function DT:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
+    local _, combatEvent, _, _, _, _, _, destGUID, destName, _, _, spellID = ...;
+
+    dungeonLog = self:ActiveDungeon()
+    if not dungeonLog then return end
+
+    local dungeonInfo = DTInstanceInfo[dungeonLog.instance]
+    if not dungeonInfo then return end
+
+    if (combatEvent == "UNIT_DIED") then
+        self:COMBAT_LOG_EVENT_UNIT_DIED(destGUID, destName)
+    elseif (combatEvent == "UNIT_HEALTH") then
+        self:COMBAT_LOG_EVENT_UNIT_HEALTH(destGUID, destName)
+    end
 end
 
 function DT:PLAYER_REGEN_DISABLED()
     dungeonLog = self:ActiveDungeon()
     if dungeonLog and not dungeonLog.timeFirstPull then
         self:Debug("First pull")
-        dbGlobal.dungeonLog[self.DungeonId].timeFirstPull = GetTime()
+        dbGlobal.dungeonLog[self.DungeonId].timeFirstPull = GetServerTime()
     end
 end
 
@@ -191,20 +325,22 @@ function DT:PLAYER_REGEN_ENABLED()
     if not self:ActiveDungeon() then return end
 
     self:Debug("Last kill")
-    dbGlobal.dungeonLog[self.DungeonId].timeLastKill = GetTime()
+    dbGlobal.dungeonLog[self.DungeonId].timeLastKill = GetServerTime()
 end
 
 function DT:EnsurePlayerExists(playerName, playerClass, playerLevel)
     dungeonLog = self:ActiveDungeon()
-    if not dungeonLog or dungeonLog.players[playerName] then return end
+    if not dungeonLog or dungeonLog.players[playerName] then return nil end
 
     dbGlobal.dungeonLog[self.DungeonId].players[playerName] = {
         name = playerName,
         class = playerClass or UnitClass(playerName),
         level = playerLevel or UnitLevel(playerName),
-        timeJoined = GetTime(),
+        timeJoined = GetServerTime(),
         timeLeft = nill
     }
+
+    return dbGlobal.dungeonLog[self.DungeonId].players[playerName]
 end
 
 function DT:ActiveDungeon()
@@ -213,9 +349,35 @@ function DT:ActiveDungeon()
     return dbGlobal.dungeonLog[self.DungeonId]
 end
 
+function DT:ActiveBossEncounter()
+    dungeonLog = self:ActiveDungeon()
+
+    if not dungeonLog and not self.EncounterId then return nil end
+
+    return dungeonLog.encounters[self.EncounterId]
+end
+
+function DT:GetItemId(itemLink)
+    return itemLink
+end
+
+function DT:GetPlayerId(playername)
+    return playername
+end
+
 function DT:AddLoot(playerName, itemLink, itemCount)
     dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
+
+    itemName, _, itemRarity, _, _, _, _, _, _, _, itemSellPrice = GetItemInfo(itemLink)
+
+    if itemRarity <= db.vendorTrashLevel then
+        dungeonLog.lootMoney = dungeonLog.lootMoney + itemSellPrice
+        return
+    end
+
+    --itemId = self:GetItemId(itemLink)
+    --playerId = self:GetPlayerId(playerName)
 
     dungeonLog.loot[dungeonLog.lootCount] = {
         link = itemLink,
@@ -356,9 +518,10 @@ function DT:AddDungeonLog(dungeonId, mapid, zone)
         xp = 0,
 
         startingMoney = GetMoney("player"),
+        lootMoney = 0,
         money = 0, -- expressed in terms of copper
 
-        timeStart = GetTime(),
+        timeStart = GetServerTime(),
         timeFirstPull = nil,
         timeLastKill = nil,
         timeEnd = nil,
@@ -382,7 +545,7 @@ end
 
 function DT:HasInstanceReset(zone)
     local zoneResetTime = dbGlobal.resetTimers[zone]
-    if zoneResetTime and zoneResetTime > GetTime() then return true end
+    if zoneResetTime and zoneResetTime > GetServerTime() then return true end
 
     return false
 end
@@ -402,37 +565,15 @@ function DT:UPDATE_INSTANCE_INFO()
     if zonetype ~= "none" and zonetype and zone and mapid then
         self:Print("Tracking ("..zone..") - "..dateTimeStamp)
         self:AddDungeonLog(dateTimeStamp.."_"..mapid, mapid, zone)
-        --[[ self.DungeonId = dateTimeStamp.."_"..mapid
-        dbGlobal.dungeonLog[self.DungeonId] = {
-            instanceId = mapid,
-            instance = zone,
-            character = UnitName("player"),
-
-            startingXP = UnitXP("player"),
-            xp = 0,
-
-            startingMoney = GetMoney("player"),
-            money = 0, -- expressed in terms of copper
-
-            timeStart = GetTime(),
-            timeFirstPull = nil,
-            timeLastKill = nil,
-            timeEnd = nil,
-
-            players = {},
-            bosses = {},
-            loot = {},
-            lootCount = 0
-        } ]]
         self:AddGroupMembers()
         return
     end
     if self.DungeonId ~= null then
         local dungeonLog = self:ActiveDungeon()
-        self:Print("Finish ("..dungeonLog.zone..") - "..dateTimeStamp)
-        dbGlobal.dungeonLog[self.DungeonId].timeEnd = GetTime()
+        self:Print("Finish ("..dungeonLog.instance..") - "..dateTimeStamp)
+        dbGlobal.dungeonLog[self.DungeonId].timeEnd = GetServerTime()
         -- Regular instances
-        self:AddDungeonReset(dungeonLog.zone, GetTime() + 30*60)
+        self:AddDungeonReset(dungeonLog.instance, GetServerTime() + 30*60)
         -- Raid instances
     end
     self.DungeonId = nil
@@ -444,18 +585,7 @@ function DT:PLAYER_ENTERING_WORLD()
     self:Debug("Player entering world")
 end
 
--- On Instance -> create entry with start time, party makeup
--- On first pull (don't know how to get that) -> set "first pull" time
--- On zone out -> add end time
--- On mob kill -> set "last kill" time
-
--- GetInstanceInfo()
--- IsInGroup()
--- IsInRaid()
--- GetNumGroupMembers()
--- GetNumSubgroupMembers()
-
-local function GetMoneyString(money)
+local function GetMoneyString(value)
     local neg1 = ""
     local neg2 = ""
     local agold = 10000;
@@ -503,7 +633,7 @@ local function GetMoneyString(money)
             silver_str = sc..(string.format("%02d", silver) or "?")..s_icon.." "..FONT_COLOR_CODE_CLOSE
             copper_str = cc..(string.format("%02d", copper) or "?")..c_icon..""..FONT_COLOR_CODE_CLOSE
         elseif (silver > 0) then
-            silver_str = sc..(silver or "?")..s_lab.." "..FONT_COLOR_CODE_CLOSE
+            silver_str = sc..(silver or "?")..s_icon.." "..FONT_COLOR_CODE_CLOSE
             copper_str = cc..(string.format("%02d", copper) or "?")..c_icon..""..FONT_COLOR_CODE_CLOSE
         elseif (copper > 0) then
             copper_str = cc..(copper or "?")..c_icon..""..FONT_COLOR_CODE_CLOSE
@@ -521,7 +651,7 @@ local function GetMoneyString(money)
 end
 
 local function GetDateString(dateTime)
-    return date("%y-%m-%d %H:%M:%S", dateTime)
+    return date("%Y-%m-%d %H:%M:%S", dateTime)
 end
 
 local function GetTimeParts(s)
@@ -543,7 +673,7 @@ end
 
 local function GetTimeString(dateTime)
     local timeText = "";
-    local days, hours, minutes, seconds = GetTimeParts(s)
+    local days, hours, minutes, seconds = GetTimeParts(dateTime)
     if seconds == "N/A" then
         timeText = "N/A";
     else
@@ -575,12 +705,28 @@ end
 local function ColoriseByLevel(textValue, level, thresholds)
     if not level or not thresholds then return textValue end
 
-    local color = "CFFFFFFFF"
-    for key, value in pairs(thresholds) do
-        if level >= key then
-            color = value
-        end
+    local color = DTColours.Red
+    if level >= thresholds[DTColours.Orange] then
+        color = DTColours.Orange
     end
+
+    if level >= thresholds[DTColours.Yellow] then
+        color = DTColours.Yellow
+    end
+
+    if level >= thresholds[DTColours.Green] then
+        color = DTColours.Green
+    end
+
+    if level >= thresholds[DTColours.Grey] then
+        color = DTColours.Grey
+    end
+    -- for key, value in ipairs(thresholds) do
+    --     DT:Debug(level.." vs "..key.." (|r"..value.."color|r)")
+    --     if level >= key then
+    --         color = value
+    --     end
+    -- end
 
     return ("|r%s%s|r"):format(color,textValue)
 end
@@ -615,15 +761,19 @@ function DT:GetDataTable()
     local t = { }
     for key, value in pairs(dbGlobal.dungeonLog) do
         local character = value.players[value.character]
-		table.insert(t, {
-            GetDateString(value.timeStart),          -- date
-            value.instance,     -- instance
-            ColoriseByClass(value.character, character.class),    -- character
-            ColoriseLevel(character.level,nil).." ["..ColoriseLevel(DT:GetGroupLevel(value),nil).."]",          -- level
-            GetTimeString(DT:GetInstanceTime(value)),          -- time
-            value.xp or 0,      -- xp
-            GetMoneyString(value.money or 0)    -- money
-        })
+        if (db.filterOptions.onlyShowCurrentCharacter == false or value.character == UnitName("player")) and
+            (db.filterOptions.instanceFilter == nil or value.instance == db.filterOptions.instanceFilter) then
+            local instanceInfo = DTInstanceInfo[value.instance] or DTEmptyLevelRange or nil
+            table.insert(t, {
+                GetDateString(value.timeStart),          -- date
+                value.instance,     -- instance
+                ColoriseByClass(value.character, character.class),    -- character
+                ColoriseLevel(character.level,instanceInfo.levelRanges).." ["..ColoriseLevel(DT:GetGroupLevel(value),instanceInfo.levelRanges).."]",          -- level
+                GetTimeString(DT:GetInstanceTime(value)),          -- time
+                value.xp or 0,      -- xp
+                GetMoneyString(value.money or 0)    -- money
+            })
+        end
     end
 
     local sort_func = function(a,b)
@@ -679,10 +829,113 @@ function DT:UpdateLog()
 	HybridScrollFrame_Update(scroll, totalHeight, shownHeight);
 end
 
+function DT:CreateListItemTemplate()
+    
+end
+
+function DT:GetInstanceList()
+    instanceList = {
+        ["ALL"] = "All Instances"
+    }
+
+    for key, value in pairs(dbGlobal.dungeonLog) do
+        local character = value.players[value.character]
+        if (db.filterOptions.onlyShowCurrentCharacter == false or value.character == UnitName("player")) then
+            if instanceList[value.instance] == nil then
+                instanceList[value.instance] = value.instance
+            end
+        end
+    end
+
+    return instanceList
+end
+
+function DT:GetInstanceSorted(instanceList)
+    fullList = {
+        "ALL", "Ragefire Chasm", "Wailing Caverns", "The Deadmines", "Shadowfang Keep", "Blackfathom Deeps", "The Stockade",
+        "Gnomeregan", "Razorfen Kraul", "Scarlet Monastery", "Razorfen Downs", "Uldaman", "Zul'Farrak", "Maraudon",
+        "The Temple of Atal'Hakkar", "Blackrock Depths", "Lower Blackrock Spire", "Upper Blackrock Spire", "Dire Maul East",
+        "Dire Maul West", "Dire Maul North", "Scholomance", "Stratholme", "Molten Core", "Onyxia's Lair", "Blackwing Lair",
+        "Zul'Gurub", "Ruins of Ahn'Qiraj", "Temple of Ahn'Qiraj", "Naxxramas"
+    }
+
+    sortedList = { }
+
+    for key, value in ipairs(fullList) do
+        if instanceList[value] ~= nil then
+            table.insert(sortedList, value)
+        end
+    end
+
+    return sortedList
+end
+
 function DT:ShowLog()
     local frame = AceGUI:Create("Frame")
-    frame:SetTitle("Example Frame")
+    frame:SetTitle("Dungeon Log")
     --frame:SetStatusText("AceGUI-3.0 Example Container Frame")
+
+    -- Filters
+    local filterTable = AceGUI:Create("SimpleGroup")
+    filterTable:SetFullWidth(true)
+    filterTable:SetLayout("Flow")
+    frame:AddChild(filterTable)
+
+    local profileLabel = AceGUI:Create("Label")
+    profileLabel:SetText("Profile")
+    profileLabel:SetWidth(50)
+    filterTable:AddChild(profileLabel)
+
+    local profileDropdown = AceGUI:Create("Dropdown")
+    profileDropdown:SetList({
+        ["GEN"] = "General",
+        ["LVL"] = "Leveling",
+        ["FARM"] = "Farming",
+        ["CLOTH"] = "Cloth Farming",
+        ["HERB"] = "Herb Farming",
+        ["ORE"] = "Ore Farming"
+    }, { "GEN", "LVL", "FARM", "CLOTH", "HERB", "ORE" })
+    profileDropdown:SetText("General")
+    profileDropdown:SetWidth(150)
+    profileDropdown:SetCallback("OnValueChanged", function(key)
+        -- Set config setting
+        DT:UpdateLog()
+    end)
+    filterTable:AddChild(profileDropdown)
+
+    local instanceLabel = AceGUI:Create("Label")
+    instanceLabel:SetText("Instances")
+    instanceLabel:SetWidth(60)
+    instanceLabel:SetPoint("LEFT", -10, 0)
+    filterTable:AddChild(instanceLabel)
+
+    local instanceList = DT:GetInstanceList()
+    local instanceSorted = DT:GetInstanceSorted(instanceList)
+
+    local instanceDropdown = AceGUI:Create("Dropdown")
+    instanceDropdown:SetList(instanceList, { "ALL", "Ragefire Chasm", "Wailing Caverns" })
+    instanceDropdown:SetText("All Instances")
+    instanceDropdown:SetCallback("OnValueChanged", function(widget, eventname, key)
+        if key == "ALL" then
+            db.filterOptions.instanceFilter = nil
+        else
+            db.filterOptions.instanceFilter = key
+        end
+        DT:UpdateLog()
+    end)
+    filterTable:AddChild(instanceDropdown)
+
+    local currentCharacterFlag = AceGUI:Create("CheckBox")
+    currentCharacterFlag:SetLabel("Only my dungeons")
+    currentCharacterFlag:SetType("checkbox")
+    currentCharacterFlag:SetValue(db.filterOptions.onlyShowCurrentCharacter)
+    currentCharacterFlag:SetWidth(150)
+    currentCharacterFlag:SetCallback("OnValueChanged", function(widget, eventname, newValue)
+        -- Set config setting
+        db.filterOptions.onlyShowCurrentCharacter = newValue
+        DT:UpdateLog()
+    end)
+    filterTable:AddChild(currentCharacterFlag)
 
     local tableHeader = AceGUI:Create("SimpleGroup")
 	tableHeader:SetFullWidth(true)
@@ -691,7 +944,7 @@ function DT:ShowLog()
 
 	local btn = AceGUI:Create("InteractiveLabel")
 	btn:SetWidth(120)
-	btn:SetText("Date", "ORANGE")
+	btn:SetText("Date")
 	tableHeader:AddChild(btn)
 
 	btn = AceGUI:Create("InteractiveLabel")
@@ -700,12 +953,12 @@ function DT:ShowLog()
 	end)
 	btn.highlight:SetColorTexture(0.3, 0.3, 0.3, 0.5) ]]
 	btn:SetWidth(150)
-	btn:SetText("Instance", "ORANGE")
+	btn:SetText("Instance")
 	tableHeader:AddChild(btn)
 
 	btn = AceGUI:Create("InteractiveLabel")
 	btn:SetWidth(80)
-	btn:SetText("Character", "ORANGE")
+	btn:SetText("Character")
 	tableHeader:AddChild(btn)
 
 	btn = AceGUI:Create("InteractiveLabel")
@@ -714,12 +967,12 @@ function DT:ShowLog()
 	end)
 	btn.highlight:SetColorTexture(0.3, 0.3, 0.3, 0.5) ]]
 	btn:SetWidth(70)
-	btn:SetText("Level", "ORANGE")
+	btn:SetText("Level")
 	tableHeader:AddChild(btn)
 
 	btn = AceGUI:Create("InteractiveLabel")
 	btn:SetWidth(70)
-	btn:SetText("Time", "ORANGE")
+	btn:SetText("Time")
 	tableHeader:AddChild(btn)
 
 	btn = AceGUI:Create("InteractiveLabel")
@@ -728,12 +981,12 @@ function DT:ShowLog()
 	end)
 	btn.highlight:SetColorTexture(0.3, 0.3, 0.3, 0.5) ]]
 	btn:SetWidth(50)
-	btn:SetText("XP", "ORANGE")
+	btn:SetText("XP")
 	tableHeader:AddChild(btn)
 
 	btn = AceGUI:Create("InteractiveLabel")
 	btn:SetWidth(60)
-	btn:SetText("Gold", "ORANGE")
+	btn:SetText("Gold")
 	tableHeader:AddChild(btn)
 
 	scrollcontainer = AceGUI:Create("SimpleGroup")
@@ -742,7 +995,7 @@ function DT:ShowLog()
 	scrollcontainer:SetLayout("Fill")
 	frame:AddChild(scrollcontainer)
 	scrollcontainer:ClearAllPoints()
-	scrollcontainer.frame:SetPoint("TOP", tableHeader.frame, "BOTTOM", 0, -5)
+	scrollcontainer.frame:SetPoint("TOP", tableHeader.frame, "BOTTOM", 0, 0)
 	scrollcontainer.frame:SetPoint("BOTTOM", 0, 20)
 
 	scroll = CreateFrame("ScrollFrame", nil, scrollcontainer.frame, "DungeonTrackerLogFrame")
@@ -750,11 +1003,11 @@ function DT:ShowLog()
 	HybridScrollFrame_SetDoNotHideScrollBar(scroll, true)
 	scroll.update = function() DT:UpdateLog() end
 
-	statusLine = AceGUI:Create("Label")
-	statusLine:SetFullWidth(true)
-	frame:AddChild(statusLine)
-	statusLine:ClearAllPoints()
-    statusLine:SetPoint("BOTTOM", frame.frame, "BOTTOM", 0, 15)
+	-- statusLine = AceGUI:Create("Label")
+	-- statusLine:SetFullWidth(true)
+	-- frame:AddChild(statusLine)
+	-- statusLine:ClearAllPoints()
+    -- statusLine:SetPoint("BOTTOM", frame.frame, "BOTTOM", 0, 15)
     
     DT:UpdateLog()
 end
