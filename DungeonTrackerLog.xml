@@ -27,7 +27,7 @@
 					</Anchors>
 				</FontString>
 				<FontString parentKey="Level" inherits="GameFontHighlightSmall" justifyH="LEFT">
-					<Size x="70"/>
+					<Size x="50"/>
 					<Anchors>
 						<Anchor point="TOPLEFT" relativePoint="TOPRIGHT" relativeKey="$parent.Character"/>
 					</Anchors>
@@ -45,7 +45,7 @@
 					</Anchors>
 				</FontString>
 				<FontString parentKey="Gold" inherits="GameFontHighlightSmall" justifyH="LEFT">
-					<Size x="60"/>
+					<Size x="80"/>
 					<Anchors>
 						<Anchor point="TOPLEFT" relativePoint="TOPRIGHT" relativeKey="$parent.XP"/>
 					</Anchors>

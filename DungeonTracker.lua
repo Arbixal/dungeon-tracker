@@ -20,7 +20,6 @@
 --
 
 -- TODO: Add display profiles (Leveling, Gold Farming, Cloth Farming, Mining, etc)
--- TODO: Fix date formatting
 -- TODO: Track reset timers
 -- TODO: Be able to delete log entries
 -- TODO: Detailed view of instance run (loot, boss kills, etc.)
@@ -29,9 +28,8 @@
 -- TODO: Test raid run
 -- TODO: Add combat logging
 -- TODO: Do something more meaningful with data broker (reset timers, combat log on, current instance, etc)
--- TODO: Add configuration options
+-- TODO: Add configuration options (enable combat logging, vendor trash threshold)
 -- TODO: Trim data footprint (archive old runs to just summary?)
--- TODO: Better item handling (vendor trash counts to gold, etc)
 
 -- Globals
 local ADDON_NAME, ADDON_TABLE = ...
@@ -54,6 +52,7 @@ local enabled_icon  = "Interface\\AddOns\\"..ADDON_NAME.."\\enabled"
 local disabled_icon = "Interface\\AddOns\\"..ADDON_NAME.."\\disabled"
 
 local DTInstanceInfo = _G.DTInstanceInfo
+local DTLevelInfo = _G.DTLevelInfo
 local db
 local dbGlobal
 local defaults = {
@@ -80,6 +79,10 @@ local defaults = {
     }
 }
 
+function DungeonConsole:Debug(message)
+    DT:Debug(message)
+end
+
 function DT:OnInitialize()
     self.db = LibStub("AceDB-3.0"):New("DungeonTrackerDB", defaults, "Default")
     db = self.db.profile
@@ -90,9 +93,16 @@ function DT:OnInitialize()
 		db.version = 1
     end
 
-    if not dbGlobal.version or dbGlobal.version < 1 then
+    if not dbGlobal.version then
+        self:Debug("DB doesn't exist, creating new")
         dbGlobal.dungeonLog = {}
         dbGlobal.version = 1
+    elseif dbGlobal.version < 2 then
+        self:Debug("Migrating db from version 1 to version 2")
+        dbGlobal.dungeonLog = _G.DT_MigrateV1_To_V2(db, dbGlobal)
+        dbGlobal.version = 2
+    else
+        self:Debug("DB is correct version")
     end
     
     -- Create Dialogs
@@ -241,19 +251,12 @@ function DT:ENCOUNTER_END(event, encounterId, name, difficulty, size, success)
     self:EndEncounter(encounterId, name, success)
 end
 
-local function GetNPCIdFromGuid(guid)
-    local first3 = tonumber("0x"..strsub(guid, 3, 5));
-    local unitType = bit.band(first3, 0x007);
-    if ((unitType == 0x003) or (unitType == 0x005)) then
-        return tonumber("0x"..strsub(guid, 6, 10));
-    else
-        return nil;
-    end
-end
-
 function DT:COMBAT_LOG_EVENT_UNIT_DIED(destGUID, destName)
     dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
+
+    local NPCID = DT_GetNPCIdFromGuid(destGUID)
+    dungeonLog:AddKill(NPCID)
 
     dungeonInfo = _G.DTInstanceInfo[dungeonLog.instance]
     if not dungeonInfo then return end
@@ -265,7 +268,7 @@ function DT:COMBAT_LOG_EVENT_UNIT_DIED(destGUID, destName)
     if not encounterInfo then return end
 
     local localBossName = destName
-    local NPCID = GetNPCIdFromGuid(destGUID)
+    local NPCID = DT_GetNPCIdFromGuid(destGUID)
     local encounterBoss = encounterInfo.bosses[NPCID]
     if encounterBoss then
         self:Debug("Valid NPCID found... - Match on "..encounterBoss.name)
@@ -287,7 +290,7 @@ function DT:COMBAT_LOG_EVENT_UNIT_HEALTH(destGUID, destName)
     dungeonInfo = _G.DTInstanceInfo[dungeonLog.instance]
     if not dungeonInfo then return end
 
-    local NPCID = GetNPCIdFromGuid(destGUID)
+    local NPCID = DT_GetNPCIdFromGuid(destGUID)
     for key, value in pairs(dungeonInfo.encounters) do
         if value.bosses[NPCID] then
             self:Debug("Starting Encounter by UNIT_HEALTH encounterId="..key..", name="..value.name)
@@ -303,8 +306,8 @@ function DT:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
     dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
-    local dungeonInfo = DTInstanceInfo[dungeonLog.instance]
-    if not dungeonInfo then return end
+--[[     local dungeonInfo = DTInstanceInfo[dungeonLog.instance]
+    if not dungeonInfo then return end ]]
 
     if (combatEvent == "UNIT_DIED") then
         self:COMBAT_LOG_EVENT_UNIT_DIED(destGUID, destName)
@@ -315,33 +318,49 @@ end
 
 function DT:PLAYER_REGEN_DISABLED()
     dungeonLog = self:ActiveDungeon()
-    if dungeonLog and not dungeonLog.timeFirstPull then
+    if not dungeonLog then return end
+
+    dungeonLog:StartCombat()
+    --[[ if dungeonLog and not dungeonLog.timeFirstPull then
         self:Debug("First pull")
         dbGlobal.dungeonLog[self.DungeonId].timeFirstPull = GetServerTime()
-    end
+    end ]]
 end
 
 function DT:PLAYER_REGEN_ENABLED()
-    if not self:ActiveDungeon() then return end
+    dungeonLog = self:ActiveDungeon()
+    if not dungeonLog then return end
 
-    self:Debug("Last kill")
-    dbGlobal.dungeonLog[self.DungeonId].timeLastKill = GetServerTime()
+    dungeonLog:EndCombat()
+    --[[ self:Debug("Last kill")
+    dbGlobal.dungeonLog[self.DungeonId].timeLastKill = GetServerTime() ]]
 end
 
-function DT:EnsurePlayerExists(playerName, playerClass, playerLevel)
+--[[ function DT:EnsurePlayerExists(playerName, playerClass, playerLevel)
     dungeonLog = self:ActiveDungeon()
-    if not dungeonLog or dungeonLog.players[playerName] then return nil end
+    if not dungeonLog then 
+        self:Debug("Trying to create player for dungeon log that doesn't exist.")
+        return nil 
+    end
+
+    return dungeonLog:EnsurePlayerExists(playerName, playerClass, playerLevel)
+
+    if not playerClass then
+        self:Debug("Ensuring '"..playerName.."' exists")
+        local className, classFilename, classID = UnitClass(playerName)
+        playerClass = className
+    end
 
     dbGlobal.dungeonLog[self.DungeonId].players[playerName] = {
         name = playerName,
-        class = playerClass or UnitClass(playerName),
+        class = playerClass,
         level = playerLevel or UnitLevel(playerName),
         timeJoined = GetServerTime(),
         timeLeft = nill
     }
 
     return dbGlobal.dungeonLog[self.DungeonId].players[playerName]
-end
+end ]]
 
 function DT:ActiveDungeon()
     if not self.DungeonId then return nil end
@@ -357,19 +376,28 @@ function DT:ActiveBossEncounter()
     return dungeonLog.encounters[self.EncounterId]
 end
 
-function DT:GetItemId(itemLink)
+--[[ function DT:GetItemId(itemLink)
     return itemLink
 end
 
 function DT:GetPlayerId(playername)
     return playername
-end
+end ]]
 
-function DT:AddLoot(playerName, itemLink, itemCount)
+function DT:AddLoot(playerKey, itemLink, itemCount)
+    
     dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     itemName, _, itemRarity, _, _, _, _, _, _, _, itemSellPrice = GetItemInfo(itemLink)
+
+    if itemRarity <= db.vendorTrashLevel then
+        dungeonLog:AddVendorTrash(itemSellPrice)
+    else
+        dungeonLog:AddLoot(playerKey, itemLink, itemCount)
+    end
+
+    --[[ itemName, _, itemRarity, _, _, _, _, _, _, _, itemSellPrice = GetItemInfo(itemLink)
 
     if itemRarity <= db.vendorTrashLevel then
         dungeonLog.lootMoney = dungeonLog.lootMoney + itemSellPrice
@@ -384,7 +412,7 @@ function DT:AddLoot(playerName, itemLink, itemCount)
         count = itemCount,
         recipient = playerName
     }
-    dungeonLog.lootCount = dungeonLog.lootCount + 1
+    dungeonLog.lootCount = dungeonLog.lootCount + 1 ]]
 end
 
 function DT:CHAT_MSG_LOOT(event, text, ...)
@@ -392,8 +420,10 @@ function DT:CHAT_MSG_LOOT(event, text, ...)
     if not dungeonLog then return end
 
     local playerName, itemLink, itemCount = self:GetLootFromChatLog(text)
-    self:EnsurePlayerExists(playerName)
-    self:AddLoot(playerName, itemLink, itemCount)
+    if playerName then
+        playerKey = dungeonLog:EnsurePlayerExists(playerName)
+        self:AddLoot(playerKey, itemLink, itemCount)
+    end
 end
 
 function DT:GetLootFromChatLog(chatmsg)
@@ -415,7 +445,9 @@ function DT:GetLootFromChatLog(chatmsg)
         itemCount = 1;
         itemLink = string.match(chatmsg, L["LOOT_ITEM_SELF"]);
     end
+
     -- if itemLink == nil, then there was neither a LOOT_ITEM, nor a LOOT_ITEM_SELF message
+    -- "You receive item: " (from trade) ignore
     if (itemLink == nil) then 
         -- MRT_Debug("No valid loot event received."); 
         return; 
@@ -430,32 +462,38 @@ function DT:CHAT_MSG_MONEY(event, text, ...)
     dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
-    local moneyGained = GetMoney("player") - dungeonLog.startingMoney
+    dungeonLog:MoneyUpdated()
+
+    --[[ local moneyGained = GetMoney("player") - dungeonLog.startingMoney
     self:Debug("Money gain: '"..moneyGained.."'")
-    dungeonLog.money = moneyGained
+    dungeonLog.money = moneyGained ]]
 end
 
 function DT:PLAYER_XP_UPDATE()
     dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
-    local xpGained = UnitXP("player") - dungeonLog.startingXP
+    dungeonLog:XPUpdated()
+
+--[[     local xpGained = self:GetPlayerTotalXP(UnitLevel("player"), UnitXP("player")) - dungeonLog.startingXP
     self:Debug("XP Gain: '"..xpGained.."'")
-    dungeonLog.xp = xpGained
+    dungeonLog.xp = xpGained ]]
 end
 
 function DT:GROUP_ROSTER_UPDATE()
-    if not self:ActiveDungeon() then return end
+    dungeonLog = self:ActiveDungeon()
+    if not dungeonLog then return end
 
     self:Debug("Party changed")
-    self:AddGroupMembers()
+    dungeonLog:AddGroupMembers()
 end
 
 function DT:RAID_ROSTER_UPDATE()
-    if not self:ActiveDungeon() then return end
+    dungeonLog = self:ActiveDungeon()
+    if not dungeonLog then return end
 
     self:Debug("Raid roster changed")
-    self:AddGroupMembers()
+    dungeonLog:AddGroupMembers()
 end
 
 function DT:CHAT_MSG_SYSTEM(event, text)
@@ -466,55 +504,46 @@ function DT:CHAT_MSG_SYSTEM(event, text)
     self:Debug("Resetting the instance '"..instance.."'.")
 end
 
---- Gets information about the group member at the given index
--- @param index The index for the group/raid member that requires information
-function DT:GetRaidRosterInfo(index)
-    if IsInRaid() then
-        return GetRaidRosterInfo(index)
+--[[ function DT:GetPlayerTotalXP(currentLevel, xpInCurrentLevel)
+    if currentLevel < 1 then
+        currentLevel = 1
     end
 
-    local UnitID = "player"
-    if IsInRaid() then
-        UnitID = "raid"..index
-    elseif IsInGroup() then
-        UnitID = "party"..index
+    if currentLevel > 60 then
+        currentLevel = 60
     end
 
-    local name = GetUnitName(UnitID);
-	local rank = 0;
-	local subgroup = 1;
-	local level = UnitLevel(UnitID);
-	local class,fileName = UnitClass(UnitID);
-	local zone = GetRealZoneText();
-	local online = UnitIsConnected(UnitID);
-	local isDead = UnitIsDead(UnitID);
-	local role = nil;
-	local isML = nil;
-	local combatRole = nil;
-	
-	return name, rank, subgroup, level, class, fileName, zone, online, isDead, role, isML, combatRole;
-end
+    return DTLevelInfo[currentLevel] + xpInCurrentLevel
+end ]]
 
-function DT:AddGroupMembers()
+--[[ function DT:AddGroupMembers()
     local memberCount = 1
-    if IsInRaid() or IsInGroup() then
+    if IsInRaid() then
         memberCount = GetNumGroupMembers()
+        for memberIndex = 1, memberCount do
+            local name, _, _, level, class = DT_GetRaidRosterInfo(memberIndex)
+            self:EnsurePlayerExists(name, class, level)
+        end
+    elseif IsInGroup() then
+        memberCount = GetNumGroupMembers()
+        for memberIndex = 1, memberCount-1 do
+            self:Debug("party"..memberIndex.." of "..memberCount-1)
+            local name, realm = UnitName("party"..memberIndex)
+            self:Debug("Adding player '"..name.."'")
+            self:EnsurePlayerExists(name)
+        end
     end
-
-    for memberIndex = 1, memberCount do
-        local name, _, _, level, class = self:GetRaidRosterInfo(memberIndex)
-        self:EnsurePlayerExists(name, class, level)
-    end
-end
+end ]]
 
 function DT:AddDungeonLog(dungeonId, mapid, zone)
     self.DungeonId = dungeonId;
-    dbGlobal.dungeonLog[dungeonId] = {
+    dbGlobal.dungeonLog[dungeonId] = DungeonLog:new(mapid, zone)
+    --[[ dbGlobal.dungeonLog[dungeonId] = {
         instanceId = mapid,
         instance = zone,
         character = UnitName("player"),
 
-        startingXP = UnitXP("player"),
+        startingXP = self:GetPlayerTotalXP(UnitLevel("player"), UnitXP("player")),
         xp = 0,
 
         startingMoney = GetMoney("player"),
@@ -530,7 +559,7 @@ function DT:AddDungeonLog(dungeonId, mapid, zone)
         bosses = {},
         loot = {},
         lootCount = 0
-    }
+    } ]]
 end
 
 function DT:AddDungeonReset(zone, resetTime)
@@ -585,156 +614,6 @@ function DT:PLAYER_ENTERING_WORLD()
     self:Debug("Player entering world")
 end
 
-local function GetMoneyString(value)
-    local neg1 = ""
-    local neg2 = ""
-    local agold = 10000;
-    local asilver = 100;
-    local outstr = "";
-    local gold = 0;
-    local gold_str = ""
-    local gc = "|cFFFFFF00"
-    local silver = 0;
-    local silver_str = ""
-    local sc = "|cFFCCCCCC"
-    local copper = 0;
-    local copper_str = ""
-    local cc = "|cFFFF6600"
-    local amount = (value or 0)
-    local cash = (amount or 0)
-    local font_size = 10
-    local icon_pre = "|TInterface\\MoneyFrame\\"
-    local icon_post = ":"..font_size..":"..font_size..":2:0|t"
-    local g_icon = icon_pre.."UI-GoldIcon"..icon_post
-    local s_icon = icon_pre.."UI-SilverIcon"..icon_post
-    local c_icon = icon_pre.."UI-CopperIcon"..icon_post
-
-    if amount < 0 then
-        neg1 = "|cFFFF6600" .."("..FONT_COLOR_CODE_CLOSE
-        neg2 = "|cFFFF6600" ..")"..FONT_COLOR_CODE_CLOSE
-    else
-        neg2 = " " -- need to pad for other negative numbers
-    end
-    if amount < 0 then
-        amount = amount * -1
-    end
-    
-    if amount == 0 then
-        copper_str = cc..(amount or "?")..c_icon..""..FONT_COLOR_CODE_CLOSE
-    elseif amount > 0 then
-        -- figure out the gold - silver - copper components
-        gold = (math.floor(amount / agold) or 0)
-        amount = amount - (gold * agold);
-        silver = (math.floor(amount / asilver) or 0)
-        copper = amount - (silver * asilver)
-        -- now make the coin strings
-        if gold > 0 then
-            gold_str = gc..(comma_value(gold) or "?")..g_icon.." "..FONT_COLOR_CODE_CLOSE
-            silver_str = sc..(string.format("%02d", silver) or "?")..s_icon.." "..FONT_COLOR_CODE_CLOSE
-            copper_str = cc..(string.format("%02d", copper) or "?")..c_icon..""..FONT_COLOR_CODE_CLOSE
-        elseif (silver > 0) then
-            silver_str = sc..(silver or "?")..s_icon.." "..FONT_COLOR_CODE_CLOSE
-            copper_str = cc..(string.format("%02d", copper) or "?")..c_icon..""..FONT_COLOR_CODE_CLOSE
-        elseif (copper > 0) then
-            copper_str = cc..(copper or "?")..c_icon..""..FONT_COLOR_CODE_CLOSE
-        end
-    end
-
-    -- build the return string
-    outstr = outstr
-        ..neg1
-        ..gold_str
-        ..silver_str
-        ..copper_str
-        ..neg2
-    return outstr, cash, gold, silver, copper
-end
-
-local function GetDateString(dateTime)
-    return date("%Y-%m-%d %H:%M:%S", dateTime)
-end
-
-local function GetTimeParts(s)
-	local days = 0
-	local hours = 0
-	local minutes = 0
-	local seconds = 0
-	if not s or (s < 0) then
-		seconds = "N/A"
-	else
-		days = floor(s/24/60/60); s = mod(s, 24*60*60);
-		hours = floor(s/60/60); s = mod(s, 60*60);
-		minutes = floor(s/60); s = mod(s, 60);
-		seconds = s;
-	end
-
-	return days, hours, minutes, seconds
-end
-
-local function GetTimeString(dateTime)
-    local timeText = "";
-    local days, hours, minutes, seconds = GetTimeParts(dateTime)
-    if seconds == "N/A" then
-        timeText = "N/A";
-    else
-        if (days ~= 0) then
-            timeText = timeText..format("%dd ", days);
-        end
-        if (days ~= 0 or hours ~= 0) then
-            timeText = timeText..format("%dh ", hours);
-        end
-        if (days ~= 0 or hours ~= 0 or minutes ~= 0) then
-            timeText = timeText..format("%dm ", minutes);
-        end
-        timeText = timeText..format("%ds", seconds);
-    end
-    return timeText;
-end
-
-local function ColoriseByClass(textValue, className)
-    if not className then return textValue end
-
-    classColour = RAID_CLASS_COLORS[string.upper(className)]
-    if not classColour then return textValue end
-
-    textValue = ("|cFF%02X%02X%02X%s|r"):format(classColour.r * 255, classColour.g * 255, classColour.b * 255, textValue)
-
-    return textValue
-end
-
-local function ColoriseByLevel(textValue, level, thresholds)
-    if not level or not thresholds then return textValue end
-
-    local color = DTColours.Red
-    if level >= thresholds[DTColours.Orange] then
-        color = DTColours.Orange
-    end
-
-    if level >= thresholds[DTColours.Yellow] then
-        color = DTColours.Yellow
-    end
-
-    if level >= thresholds[DTColours.Green] then
-        color = DTColours.Green
-    end
-
-    if level >= thresholds[DTColours.Grey] then
-        color = DTColours.Grey
-    end
-    -- for key, value in ipairs(thresholds) do
-    --     DT:Debug(level.." vs "..key.." (|r"..value.."color|r)")
-    --     if level >= key then
-    --         color = value
-    --     end
-    -- end
-
-    return ("|r%s%s|r"):format(color,textValue)
-end
-
-local function ColoriseLevel(level, thresholds)
-    return ColoriseByLevel(level, level, thresholds)
-end
-
 function DT:GetGroupLevel(dungeonLog)
     if not dungeonLog then return end
 
@@ -760,18 +639,19 @@ end
 function DT:GetDataTable()
     local t = { }
     for key, value in pairs(dbGlobal.dungeonLog) do
-        local character = value.players[value.character]
-        if (db.filterOptions.onlyShowCurrentCharacter == false or value.character == UnitName("player")) and
+        local playerKey = DungeonLog.EnsurePlayerExists(value, value.character)
+        local character = value.players[playerKey]
+        if (character and (db.filterOptions.onlyShowCurrentCharacter == false or value.character == UnitName("player"))) and
             (db.filterOptions.instanceFilter == nil or value.instance == db.filterOptions.instanceFilter) then
             local instanceInfo = DTInstanceInfo[value.instance] or DTEmptyLevelRange or nil
             table.insert(t, {
-                GetDateString(value.timeStart),          -- date
+                DT_GetDateString(value.timeStart),          -- date
                 value.instance,     -- instance
-                ColoriseByClass(value.character, character.class),    -- character
-                ColoriseLevel(character.level,instanceInfo.levelRanges).." ["..ColoriseLevel(DT:GetGroupLevel(value),instanceInfo.levelRanges).."]",          -- level
-                GetTimeString(DT:GetInstanceTime(value)),          -- time
+                DT_ColoriseByClass(value.character, character.class),    -- character
+                DT_ColoriseLevel(character.level,instanceInfo.levelRanges).." ["..DT_ColoriseLevel(DT:GetGroupLevel(value),instanceInfo.levelRanges).."]",          -- level
+                DT_GetTimeString(DT:GetInstanceTime(value)),          -- time
                 value.xp or 0,      -- xp
-                GetMoneyString(value.money or 0)    -- money
+                DT_GetMoneyString((value.money or 0) + (value.lootMoney or 0))    -- money
             })
         end
     end
@@ -873,7 +753,6 @@ end
 function DT:ShowLog()
     local frame = AceGUI:Create("Frame")
     frame:SetTitle("Dungeon Log")
-    --frame:SetStatusText("AceGUI-3.0 Example Container Frame")
 
     -- Filters
     local filterTable = AceGUI:Create("SimpleGroup")
@@ -937,6 +816,7 @@ function DT:ShowLog()
     end)
     filterTable:AddChild(currentCharacterFlag)
 
+    -- Table Heading
     local tableHeader = AceGUI:Create("SimpleGroup")
 	tableHeader:SetFullWidth(true)
 	tableHeader:SetLayout("Flow")
@@ -966,7 +846,7 @@ function DT:ShowLog()
 		GUI:Show(false, L["Standing"])
 	end)
 	btn.highlight:SetColorTexture(0.3, 0.3, 0.3, 0.5) ]]
-	btn:SetWidth(70)
+	btn:SetWidth(50)
 	btn:SetText("Level")
 	tableHeader:AddChild(btn)
 
@@ -985,7 +865,7 @@ function DT:ShowLog()
 	tableHeader:AddChild(btn)
 
 	btn = AceGUI:Create("InteractiveLabel")
-	btn:SetWidth(60)
+	btn:SetWidth(80)
 	btn:SetText("Gold")
 	tableHeader:AddChild(btn)
 
