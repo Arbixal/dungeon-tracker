@@ -29,7 +29,7 @@
 -- TODO: Add combat logging
 -- TODO: Do something more meaningful with data broker (reset timers, combat log on, current instance, etc)
 -- TODO: Add configuration options (enable combat logging, vendor trash threshold)
--- TODO: Trim data footprint (archive old runs to just summary?)
+
 
 -- Globals
 local ADDON_NAME, ADDON_TABLE = ...
@@ -60,7 +60,7 @@ local defaults = {
 		combatLog = {},
         prompt = true,
         debugMode = true,
-        debugLevel = 1,
+        debugLevel = 2,
         chatFrame = "DEFAULT_CHAT_FRAME",
 		minimap = {
 			hide = false,
@@ -71,11 +71,13 @@ local defaults = {
         filterOptions = {
             onlyShowCurrentCharacter = false,
             instanceFilter = nil
-        },
+        }
+    },
+    char = {
+        resetTimers = {}
     },
     global = {
-        dungeonLog = {},
-        resetTimers = {}
+        dungeonLog = {}
     }
 }
 
@@ -86,6 +88,7 @@ end
 function DT:OnInitialize()
     self.db = LibStub("AceDB-3.0"):New("DungeonTrackerDB", defaults, "Default")
     db = self.db.profile
+    dbChar = self.db.char
     dbGlobal = self.db.global
     
     if not db.version or db.version < 1 then
@@ -106,6 +109,35 @@ function DT:OnInitialize()
     end
     
     -- Create Dialogs
+    StaticPopupDialogs["DT_NEWINSTANCE"] = {
+        text = L["new-instance-question"],
+        button1 = L["Yes"],
+        button2 = L["No"],
+        OnAccept = function(self, data, data2)
+            DT:AddDungeonLog(data.dateTimeStamp, data.mapid, data.zone)
+        end,
+        OnCancel = function(self, data, reason)
+            if dbChar and dbChar.resetTimers and data and dbChar.resetTimers[data.zone] then
+                DT.DungeonId = dbChar.resetTimers[data.zone].id
+                local restartedDungeonLog = DT:ActiveDungeon()
+                DT:Debug("Reactivating ("..restartedDungeonLog.instance..") - "..data.dateTimeStamp)
+            else
+                DT:Debug("Couldn't find dungeon to resume")
+            end
+        end,
+        timeout = 0,
+        whileDead = true,
+        hideOnEscape = true
+    }
+
+    local numSavedInstances = GetNumSavedInstances()
+    for i = 1, numSavedInstances do
+        local name, id, reset = GetSavedInstanceInfo(i)
+        local days, hours, minutes, seconds = DT_GetTimeParts(reset)
+        --self:AddDungeonReset(name, GetServerTime() + reset, )
+        local resetText = DT_GetTimeString(reset)
+        self:Debug("Saved Instance: "..name.." ("..resetText..")")
+    end
 
     -- LibDataBroker setup
     if LibDataBroker then
@@ -144,13 +176,9 @@ function DT:OnInitialize()
     -- Setup options
 
     -- Register chat command
-    --self:RegisterChatCommand("dt", function() DT:ShowConfig() end)
+    --self:RegisterChatCommand("dt debug", function() db. end)
 
     self:RegisterEvents(
-        "BOSS_KILL",
-        "ENCOUNTER_START",
-        "ENCOUNTER_END",
-
         "CHAT_MSG_LOOT",            -- loot gain
         "CHAT_MSG_MONEY",           -- money gain
         "PLAYER_XP_UPDATE",         -- xp update
@@ -173,6 +201,13 @@ function DT:OnInitialize()
     self:Debug("Addon Loaded")
 end
 
+function DT:Trace(functionName)
+	if not db or not db.debugMode then return end
+	if db.debugLevel >= 2 then
+        self:Print("<Trace> "..functionName)
+	end
+end
+
 function DT:Debug(text, level)
 	if not db or not db.debugMode then return end
 	if (level or 1) <= db.debugLevel then
@@ -181,74 +216,13 @@ function DT:Debug(text, level)
 end
 
 -- Register Events
+local CombatLogGetCurrentEventInfo = CombatLogGetCurrentEventInfo
+
 function DT:RegisterEvents(...)
     for i = 1, select("#", ...) do
         local event = select(i, ...)
         self:RegisterEvent(event,event)
     end
-end
-
-function DT:EnsureBossEncounterExists(encounterId, encounterName)
-    dungeonLog = self:ActiveDungeon()
-
-    if not dungeonLog then return nil end
-
-    dungeonLog.encounters[encounterID] = {
-        id = encounterId,
-        name = encounterName,
-        bosses = {},
-        timeStart = GetServerTime()
-    }
-
-    return dungeonLog.encounters[encounterID]
-end
-
-function DT:BOSS_KILL(event, encounterId, encounterName)
-    if not self:ActiveDungeon() then return end
-
-    self:Debug("BOSS_KILL fired! encounterID="..encounterID..", name="..encounterName)
-    bossEncounter = self:EnsureBossEncounterExists(encounterID, encounterName)
-
-    if not bossEncounter then return end
-
-    bossEncounter.timeKill = GetServerTime()
-end
-
---- Ways an encounter can start:
---       ENCOUNTER_START event
---       UNIT_HEALTH event for boss npc
---       boss yell
-function DT:StartEncounter(encounterId, name)
-    self.EncounterId = encounterId
-    bossEncounter = self:EnsureBossEncounterExists(encounterId, name)
-    bossEncounter.attempts = bossEncounter.attempts + 1
-end
-
---- Ways an encounter can end:
---       ENCOUNTER_END event
---       BOSS_KILL event for only boss
---       UNIT_DEAD event for only boss
---       boss yell
-function DT:EndEncounter(encounterId, name, success)
-    bossEncounter = self:EnsureBossEncounterExists(encounterId, name)
-    bossEncounter.success = success
-    self.EncounterId = nil
-end
-
-function DT:ENCOUNTER_START(event, encounterId, name, difficulty, size)
-    if not self:ActiveDungeon() then return end
-
-    if self:ActiveBossEncounter() then return end
-
-    self:Debug("ENCOUNTER_START fired! encounterID="..encounterId..", name="..name)
-    self:StartEncounter(encounterId, name)
-end
-
-function DT:ENCOUNTER_END(event, encounterId, name, difficulty, size, success)
-    if not self:ActiveDungeon() then return end
-
-    self:Debug("ENCOUNTER_END fired! encounterID="..encounterId..", name="..name..", success="..success)
-    self:EndEncounter(encounterId, name, success)
 end
 
 function DT:COMBAT_LOG_EVENT_UNIT_DIED(destGUID, destName)
@@ -257,62 +231,16 @@ function DT:COMBAT_LOG_EVENT_UNIT_DIED(destGUID, destName)
 
     local NPCID = DT_GetNPCIdFromGuid(destGUID)
     dungeonLog:AddKill(NPCID)
-
-    dungeonInfo = _G.DTInstanceInfo[dungeonLog.instance]
-    if not dungeonInfo then return end
-    
-    bossEncounter = self:ActiveBossEncounter()
-    if not bossEncounter then return end
-
-    local encounterInfo = dungeonInfo.encounters[bossEncounter.id]
-    if not encounterInfo then return end
-
-    local localBossName = destName
-    local NPCID = DT_GetNPCIdFromGuid(destGUID)
-    local encounterBoss = encounterInfo.bosses[NPCID]
-    if encounterBoss then
-        self:Debug("Valid NPCID found... - Match on "..encounterBoss.name)
-        bossEncounter.bosses[NPCID] = {
-            name = localBossName,
-            timeKill = GetServerTime()
-        }
-        if select("#", encounterInfo.bosses) <= 1 then
-            self:Debug("Only boss killed ... ending the encounter")
-            self:EndEncounter(bossEncounter.id, bossEncounter.name, true)
-        end
-    end
-end
-
-function DT:COMBAT_LOG_EVENT_UNIT_HEALTH(destGUID, destName)
-    dungeonLog = self:ActiveDungeon()
-    if not dungeonLog or self:ActiveBossEncounter() then return end
-
-    dungeonInfo = _G.DTInstanceInfo[dungeonLog.instance]
-    if not dungeonInfo then return end
-
-    local NPCID = DT_GetNPCIdFromGuid(destGUID)
-    for key, value in pairs(dungeonInfo.encounters) do
-        if value.bosses[NPCID] then
-            self:Debug("Starting Encounter by UNIT_HEALTH encounterId="..key..", name="..value.name)
-            self:EnsureBossEncounterExists(key, value.name)
-            self.EncounterId = key
-        end
-    end
 end
 
 function DT:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
-    local _, combatEvent, _, _, _, _, _, destGUID, destName, _, _, spellID = ...;
+    local _, combatEvent, _, sourceGUID, sourceName, _, _, destGUID, destName, _, _, spellID = CombatLogGetCurrentEventInfo()
 
     dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
---[[     local dungeonInfo = DTInstanceInfo[dungeonLog.instance]
-    if not dungeonInfo then return end ]]
-
     if (combatEvent == "UNIT_DIED") then
         self:COMBAT_LOG_EVENT_UNIT_DIED(destGUID, destName)
-    elseif (combatEvent == "UNIT_HEALTH") then
-        self:COMBAT_LOG_EVENT_UNIT_HEALTH(destGUID, destName)
     end
 end
 
@@ -321,10 +249,6 @@ function DT:PLAYER_REGEN_DISABLED()
     if not dungeonLog then return end
 
     dungeonLog:StartCombat()
-    --[[ if dungeonLog and not dungeonLog.timeFirstPull then
-        self:Debug("First pull")
-        dbGlobal.dungeonLog[self.DungeonId].timeFirstPull = GetServerTime()
-    end ]]
 end
 
 function DT:PLAYER_REGEN_ENABLED()
@@ -332,35 +256,7 @@ function DT:PLAYER_REGEN_ENABLED()
     if not dungeonLog then return end
 
     dungeonLog:EndCombat()
-    --[[ self:Debug("Last kill")
-    dbGlobal.dungeonLog[self.DungeonId].timeLastKill = GetServerTime() ]]
 end
-
---[[ function DT:EnsurePlayerExists(playerName, playerClass, playerLevel)
-    dungeonLog = self:ActiveDungeon()
-    if not dungeonLog then 
-        self:Debug("Trying to create player for dungeon log that doesn't exist.")
-        return nil 
-    end
-
-    return dungeonLog:EnsurePlayerExists(playerName, playerClass, playerLevel)
-
-    if not playerClass then
-        self:Debug("Ensuring '"..playerName.."' exists")
-        local className, classFilename, classID = UnitClass(playerName)
-        playerClass = className
-    end
-
-    dbGlobal.dungeonLog[self.DungeonId].players[playerName] = {
-        name = playerName,
-        class = playerClass,
-        level = playerLevel or UnitLevel(playerName),
-        timeJoined = GetServerTime(),
-        timeLeft = nill
-    }
-
-    return dbGlobal.dungeonLog[self.DungeonId].players[playerName]
-end ]]
 
 function DT:ActiveDungeon()
     if not self.DungeonId then return nil end
@@ -376,14 +272,6 @@ function DT:ActiveBossEncounter()
     return dungeonLog.encounters[self.EncounterId]
 end
 
---[[ function DT:GetItemId(itemLink)
-    return itemLink
-end
-
-function DT:GetPlayerId(playername)
-    return playername
-end ]]
-
 function DT:AddLoot(playerKey, itemLink, itemCount)
     
     dungeonLog = self:ActiveDungeon()
@@ -392,27 +280,12 @@ function DT:AddLoot(playerKey, itemLink, itemCount)
     itemName, _, itemRarity, _, _, _, _, _, _, _, itemSellPrice = GetItemInfo(itemLink)
 
     if itemRarity <= db.vendorTrashLevel then
-        dungeonLog:AddVendorTrash(itemSellPrice)
+        if playerKey == UnitName("player") then
+            dungeonLog:AddVendorTrash(itemSellPrice)
+        end
     else
         dungeonLog:AddLoot(playerKey, itemLink, itemCount)
     end
-
-    --[[ itemName, _, itemRarity, _, _, _, _, _, _, _, itemSellPrice = GetItemInfo(itemLink)
-
-    if itemRarity <= db.vendorTrashLevel then
-        dungeonLog.lootMoney = dungeonLog.lootMoney + itemSellPrice
-        return
-    end
-
-    --itemId = self:GetItemId(itemLink)
-    --playerId = self:GetPlayerId(playerName)
-
-    dungeonLog.loot[dungeonLog.lootCount] = {
-        link = itemLink,
-        count = itemCount,
-        recipient = playerName
-    }
-    dungeonLog.lootCount = dungeonLog.lootCount + 1 ]]
 end
 
 function DT:CHAT_MSG_LOOT(event, text, ...)
@@ -463,10 +336,6 @@ function DT:CHAT_MSG_MONEY(event, text, ...)
     if not dungeonLog then return end
 
     dungeonLog:MoneyUpdated()
-
-    --[[ local moneyGained = GetMoney("player") - dungeonLog.startingMoney
-    self:Debug("Money gain: '"..moneyGained.."'")
-    dungeonLog.money = moneyGained ]]
 end
 
 function DT:PLAYER_XP_UPDATE()
@@ -474,10 +343,6 @@ function DT:PLAYER_XP_UPDATE()
     if not dungeonLog then return end
 
     dungeonLog:XPUpdated()
-
---[[     local xpGained = self:GetPlayerTotalXP(UnitLevel("player"), UnitXP("player")) - dungeonLog.startingXP
-    self:Debug("XP Gain: '"..xpGained.."'")
-    dungeonLog.xp = xpGained ]]
 end
 
 function DT:GROUP_ROSTER_UPDATE()
@@ -485,7 +350,7 @@ function DT:GROUP_ROSTER_UPDATE()
     if not dungeonLog then return end
 
     self:Debug("Party changed")
-    dungeonLog:AddGroupMembers()
+    DT:AddGroupMembers()
 end
 
 function DT:RAID_ROSTER_UPDATE()
@@ -493,7 +358,7 @@ function DT:RAID_ROSTER_UPDATE()
     if not dungeonLog then return end
 
     self:Debug("Raid roster changed")
-    dungeonLog:AddGroupMembers()
+    DT:AddGroupMembers()
 end
 
 function DT:CHAT_MSG_SYSTEM(event, text)
@@ -501,28 +366,20 @@ function DT:CHAT_MSG_SYSTEM(event, text)
 
     if not instance then return end
 
+    dbChar.resetTimers[instance] = nil
     self:Debug("Resetting the instance '"..instance.."'.")
 end
 
---[[ function DT:GetPlayerTotalXP(currentLevel, xpInCurrentLevel)
-    if currentLevel < 1 then
-        currentLevel = 1
-    end
+function DT:AddGroupMembers()
+    dungeonLog = self:ActiveDungeon()
+    if not dungeonLog then return end
 
-    if currentLevel > 60 then
-        currentLevel = 60
-    end
-
-    return DTLevelInfo[currentLevel] + xpInCurrentLevel
-end ]]
-
---[[ function DT:AddGroupMembers()
     local memberCount = 1
     if IsInRaid() then
         memberCount = GetNumGroupMembers()
         for memberIndex = 1, memberCount do
             local name, _, _, level, class = DT_GetRaidRosterInfo(memberIndex)
-            self:EnsurePlayerExists(name, class, level)
+            dungeonLog:EnsurePlayerExists(name, class, level)
         end
     elseif IsInGroup() then
         memberCount = GetNumGroupMembers()
@@ -530,51 +387,48 @@ end ]]
             self:Debug("party"..memberIndex.." of "..memberCount-1)
             local name, realm = UnitName("party"..memberIndex)
             self:Debug("Adding player '"..name.."'")
-            self:EnsurePlayerExists(name)
+            dungeonLog:EnsurePlayerExists(name)
         end
     end
-end ]]
-
-function DT:AddDungeonLog(dungeonId, mapid, zone)
-    self.DungeonId = dungeonId;
-    dbGlobal.dungeonLog[dungeonId] = DungeonLog:new(mapid, zone)
-    --[[ dbGlobal.dungeonLog[dungeonId] = {
-        instanceId = mapid,
-        instance = zone,
-        character = UnitName("player"),
-
-        startingXP = self:GetPlayerTotalXP(UnitLevel("player"), UnitXP("player")),
-        xp = 0,
-
-        startingMoney = GetMoney("player"),
-        lootMoney = 0,
-        money = 0, -- expressed in terms of copper
-
-        timeStart = GetServerTime(),
-        timeFirstPull = nil,
-        timeLastKill = nil,
-        timeEnd = nil,
-
-        players = {},
-        bosses = {},
-        loot = {},
-        lootCount = 0
-    } ]]
 end
 
-function DT:AddDungeonReset(zone, resetTime)
-    local zoneResetTime = dbGlobal.resetTimers[zone]
+function DT:AddDungeonLog(dateTimeStamp, mapid, zone)
+    dungeonId = dateTimeStamp.."_"..mapid
+    self.DungeonId = dungeonId;
+    self.LastDungeonZone = zone
+    self.LastDungeonId = dungeonId
+    self:Print("Tracking ("..zone..") - "..dateTimeStamp)
+    dbGlobal.dungeonLog[dungeonId] = DungeonLog:new(mapid, zone)
+    self:AddGroupMembers()
 
-    if zoneResetTime and zoneResetTime ~= resetTime then
+    return dbGlobal.dungeonLog[dungeonId]
+end
+
+function DT:AddDungeonReset(zone, resetTime, lastInstanceId)
+    local zoneReset = dbChar.resetTimers[zone]
+
+    if zoneReset and zoneReset.time ~= resetTime then
         -- this shouldn't happen
     end
 
-    dbGlobal.resetTimers[zone] = resetTime
+    dbChar.resetTimers[zone] = {
+        time = resetTime,
+        id = lastInstanceId
+    }
 end
 
 function DT:HasInstanceReset(zone)
-    local zoneResetTime = dbGlobal.resetTimers[zone]
-    if zoneResetTime and zoneResetTime > GetServerTime() then return true end
+    self:Debug("Checking if instance ("..zone..") has reset")
+    local zoneReset = dbChar.resetTimers[zone]
+    if not zoneReset or not zoneReset.time or zoneReset.time < GetServerTime() then 
+        if not zoneReset.time then
+            self:Debug(zone.." reset: None, currently "..GetServerTime())
+        else
+            self:Debug(zone.." reset: "..zoneReset.time..", currently "..GetServerTime())
+        end
+
+        return true 
+    end
 
     return false
 end
@@ -590,11 +444,23 @@ function DT:UPDATE_INSTANCE_INFO()
         return
     end
     self.LastZone = zone
+
     local dateTimeStamp = date("%y%m%d%H%M%S")
+
+    -- Check if re-entering the last instance
+    if dbChar.resetTimers[zone] and self:HasInstanceReset(zone) == false then
+        self:Debug("Check if new instance")
+        -- Prompt
+        local dialog = StaticPopup_Show("DT_NEWINSTANCE")
+        if (dialog) then
+            dialog.data = {dateTimeStamp=dateTimeStamp,mapid=mapid,zone=zone}
+        end
+        return
+    end
+
     if zonetype ~= "none" and zonetype and zone and mapid then
-        self:Print("Tracking ("..zone..") - "..dateTimeStamp)
-        self:AddDungeonLog(dateTimeStamp.."_"..mapid, mapid, zone)
-        self:AddGroupMembers()
+        self:Debug("Different zone, creating new instance")
+        self:AddDungeonLog(dateTimeStamp, mapid, zone)
         return
     end
     if self.DungeonId ~= null then
@@ -602,7 +468,7 @@ function DT:UPDATE_INSTANCE_INFO()
         self:Print("Finish ("..dungeonLog.instance..") - "..dateTimeStamp)
         dbGlobal.dungeonLog[self.DungeonId].timeEnd = GetServerTime()
         -- Regular instances
-        self:AddDungeonReset(dungeonLog.instance, GetServerTime() + 30*60)
+        self:AddDungeonReset(dungeonLog.instance, GetServerTime() + 30*60, self.DungeonId)
         -- Raid instances
     end
     self.DungeonId = nil

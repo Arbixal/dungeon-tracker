@@ -46,12 +46,23 @@ function DungeonLog:new (mapid, zone)
     o.startingMoney = GetMoney("player")
     o.timeStart = GetServerTime()
 
+    o.players = {}
+    o.kills = {}
+    o.bosses = {}
+    o.loot = {}
+
     return o
 end
 
 function DungeonLog:AddKill(npcId, npcLevel)
+    if not npcId then return end
+
     if not self.kills[npcId] then
         self.kills[npcId] = {}
+    end
+
+    if not npcLevel then
+        npcLevel = -1
     end
 
     if not self.kills[npcId][npcLevel] then
@@ -100,25 +111,6 @@ function DungeonLog:MoneyUpdated()
     local moneyGained = GetMoney("player") - self.startingMoney
     --self:Debug("Money gain: '"..moneyGained.."'")
     self.money = moneyGained
-end
-
-function DungeonLog:AddGroupMembers()
-    local memberCount = 1
-    if IsInRaid() then
-        memberCount = GetNumGroupMembers()
-        for memberIndex = 1, memberCount do
-            local name, _, _, level, class = DT_GetRaidRosterInfo(memberIndex)
-            self:EnsurePlayerExists(name, class, level)
-        end
-    elseif IsInGroup() then
-        memberCount = GetNumGroupMembers()
-        for memberIndex = 1, memberCount-1 do
-            --self:Debug("party"..memberIndex.." of "..memberCount-1)
-            local name, realm = UnitName("party"..memberIndex)
-            --self:Debug("Adding player '"..name.."'")
-            self:EnsurePlayerExists(name)
-        end
-    end
 end
 
 function DungeonLog:EnsurePlayerExists(playerName, playerClass, playerLevel, timeJoined)

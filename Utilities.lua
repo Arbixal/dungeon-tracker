@@ -1,10 +1,13 @@
 function DT_GetNPCIdFromGuid(guid)
-    local first3 = tonumber("0x"..strsub(guid, 3, 5));
-    local unitType = bit.band(first3, 0x007);
-    if ((unitType == 0x003) or (unitType == 0x005)) then
-        return tonumber("0x"..strsub(guid, 6, 10));
+    -- Creature-0-4671-389-32075-11320-0004ACF208
+    -- Player-4667-005D46A4
+
+    local type, zero, server_id, instance_id, zone_uid, npc_id, spawn_uid = strsplit("-",guid);
+
+    if type == "Creature" then
+        return npc_id
     else
-        return nil;
+        return nil
     end
 end
 
