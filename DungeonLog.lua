@@ -66,23 +66,23 @@ function DungeonLog:AddKill(npcId, npcLevel)
     end
 
     if not self.kills[npcId][npcLevel] then
-        DungeonConsole:Debug("Creating NPC kill")
+        --DungeonConsole:Debug("Creating NPC kill")
         self.kills[npcId][npcLevel] = 0
     end
 
-    DungeonConsole:Debug("Incrementing kill counter for "..npcId)
+    --DungeonConsole:Debug("Incrementing kill counter for "..npcId)
     self.kills[npcId][npcLevel] = self.kills[npcId][npcLevel] + 1
 end
 
 function DungeonLog:AddLoot(playerKey, itemLink, itemCount)
-    itemId = _G.DT_GetItemIdFromItemLink(itemLink)
+    local itemId = _G.DT_GetItemIdFromItemLink(itemLink)
 
     if not self.loot[itemId] then
-        DungeonConsole:Debug("Creating loot item: "..itemId)
+        --DungeonConsole:Debug("Creating loot item: "..itemId)
         self.loot[itemId] = DungeonLoot:new(itemLink)
     end
 
-    DungeonConsole:Debug("Adding recipient "..playerKey.." to item")
+    --DungeonConsole:Debug("Adding recipient "..playerKey.." to item")
     self.loot[itemId]:AddRecipient(playerKey, itemCount)
 end
 
@@ -114,14 +114,14 @@ function DungeonLog:MoneyUpdated()
 end
 
 function DungeonLog:EnsurePlayerExists(playerName, playerClass, playerLevel, timeJoined)
-    DungeonConsole:Debug("Ensuring '"..playerName.."' exists")
+    --DungeonConsole:Debug("Ensuring '"..playerName.."' exists")
 
     playerKey = nil
     local nextKey = 1
     for key, value in pairs(self.players) do
         if value.name == playerName then
             playerKey = key
-            DungeonConsole:Debug("'"..playerName.."' found as "..playerKey)
+            --DungeonConsole:Debug("'"..playerName.."' found as "..playerKey)
             break
         end
 
@@ -130,12 +130,12 @@ function DungeonLog:EnsurePlayerExists(playerName, playerClass, playerLevel, tim
 
     if not playerKey then
         if not playerClass then
-            DungeonConsole:Debug("Getting class for '"..playerName.."'")
+            --DungeonConsole:Debug("Getting class for '"..playerName.."'")
             local className, classFilename, classID = UnitClass(playerName)
             playerClass = className
         end
 
-        DungeonConsole:Debug("Creating '"..playerName.."'")
+        --DungeonConsole:Debug("Creating '"..playerName.."'")
         self.players[nextKey] = DungeonPlayer:new(playerName, playerClass, playerLevel, timeJoined)
         playerKey = nextKey
     end

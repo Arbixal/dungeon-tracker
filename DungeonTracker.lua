@@ -130,6 +130,18 @@ function DT:OnInitialize()
         hideOnEscape = true
     }
 
+    local raidInstances = {}
+    for key, value in pairs(_G.DTRaidInfo) do
+        if value.firstOpen > 0 then
+            raidInstances[value.name] = {
+                name = value.name,
+                resetTime = value.resetTime,
+                resetStart = value.resetStart,
+                status = GREEN_FONT_COLOR_CODE.."Available"..FONT_COLOR_CODE_CLOSE
+            }
+        end
+    end
+
     local numSavedInstances = GetNumSavedInstances()
     for i = 1, numSavedInstances do
         local name, id, reset = GetSavedInstanceInfo(i)
@@ -137,6 +149,8 @@ function DT:OnInitialize()
         --self:AddDungeonReset(name, GetServerTime() + reset, )
         local resetText = DT_GetTimeString(reset)
         self:Debug("Saved Instance: "..name.." ("..resetText..")")
+
+        raidInstances[name].status = RED_FONT_COLOR_CODE.."Saved"..FONT_COLOR_CODE_CLOSE
     end
 
     -- LibDataBroker setup
@@ -160,11 +174,26 @@ function DT:OnInitialize()
 					end ]]
 				end
 			end,
-			OnTooltipShow = function(tooltip)
+            OnTooltipShow = function(tooltip)
+                local currentServerTime = GetServerTime()
+
 				tooltip:AddLine(ADDON_NAME)
 				tooltip:AddLine(" ")
 				tooltip:AddLine("Click to toggle combat logging")
-				tooltip:AddLine("Right-click to open the options menu")
+                tooltip:AddLine("Right-click to open the options menu")
+                tooltip:AddLine(" ")
+
+                for key, value in pairs(raidInstances) do
+                    local timeIntoReset = mod(currentServerTime - value.resetStart, value.resetTime)
+                    local resetTime = value.resetTime - timeIntoReset
+                    local nextReset = currentServerTime + resetTime
+
+                    tooltip:AddDoubleLine(value.name, value.status, 1, 1, 1)
+                    tooltip:AddDoubleLine("Resets:", DT_GetTimeString(resetTime))
+                    tooltip:AddDoubleLine(" ", DT_GetRelativeDateString(nextReset, currentServerTime))
+                    tooltip:AddLine(" ")
+                end
+
 			end
 		})
 		--[[ if LDBIcon then
@@ -225,8 +254,10 @@ function DT:RegisterEvents(...)
     end
 end
 
+
+
 function DT:COMBAT_LOG_EVENT_UNIT_DIED(destGUID, destName)
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     local NPCID = DT_GetNPCIdFromGuid(destGUID)
@@ -236,7 +267,7 @@ end
 function DT:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
     local _, combatEvent, _, sourceGUID, sourceName, _, _, destGUID, destName, _, _, spellID = CombatLogGetCurrentEventInfo()
 
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     if (combatEvent == "UNIT_DIED") then
@@ -245,14 +276,14 @@ function DT:COMBAT_LOG_EVENT_UNFILTERED(event, ...)
 end
 
 function DT:PLAYER_REGEN_DISABLED()
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     dungeonLog:StartCombat()
 end
 
 function DT:PLAYER_REGEN_ENABLED()
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     dungeonLog:EndCombat()
@@ -264,20 +295,11 @@ function DT:ActiveDungeon()
     return dbGlobal.dungeonLog[self.DungeonId]
 end
 
-function DT:ActiveBossEncounter()
-    dungeonLog = self:ActiveDungeon()
-
-    if not dungeonLog and not self.EncounterId then return nil end
-
-    return dungeonLog.encounters[self.EncounterId]
-end
-
 function DT:AddLoot(playerKey, itemLink, itemCount)
-    
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
-    itemName, _, itemRarity, _, _, _, _, _, _, _, itemSellPrice = GetItemInfo(itemLink)
+    local _, _, itemRarity, _, _, _, _, _, _, _, itemSellPrice = GetItemInfo(itemLink)
 
     if itemRarity <= db.vendorTrashLevel then
         if playerKey == UnitName("player") then
@@ -289,12 +311,12 @@ function DT:AddLoot(playerKey, itemLink, itemCount)
 end
 
 function DT:CHAT_MSG_LOOT(event, text, ...)
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     local playerName, itemLink, itemCount = self:GetLootFromChatLog(text)
     if playerName then
-        playerKey = dungeonLog:EnsurePlayerExists(playerName)
+        local playerKey = dungeonLog:EnsurePlayerExists(playerName)
         self:AddLoot(playerKey, itemLink, itemCount)
     end
 end
@@ -326,27 +348,27 @@ function DT:GetLootFromChatLog(chatmsg)
         return; 
     end
 	-- if code reaches this point, we should have a valid looter and a valid itemLink
-    self:Debug("Loot gain: Looter is "..playerName.." and loot is "..itemLink.." (quantity: "..itemCount..")");
+    --self:Debug("Loot gain: Looter is "..playerName.." and loot is "..itemLink.." (quantity: "..itemCount..")");
     
     return playerName, itemLink, itemCount
 end	
 
 function DT:CHAT_MSG_MONEY(event, text, ...)
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     dungeonLog:MoneyUpdated()
 end
 
 function DT:PLAYER_XP_UPDATE()
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     dungeonLog:XPUpdated()
 end
 
 function DT:GROUP_ROSTER_UPDATE()
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     self:Debug("Party changed")
@@ -354,7 +376,7 @@ function DT:GROUP_ROSTER_UPDATE()
 end
 
 function DT:RAID_ROSTER_UPDATE()
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     self:Debug("Raid roster changed")
@@ -371,7 +393,7 @@ function DT:CHAT_MSG_SYSTEM(event, text)
 end
 
 function DT:AddGroupMembers()
-    dungeonLog = self:ActiveDungeon()
+    local dungeonLog = self:ActiveDungeon()
     if not dungeonLog then return end
 
     local memberCount = 1
@@ -384,16 +406,16 @@ function DT:AddGroupMembers()
     elseif IsInGroup() then
         memberCount = GetNumGroupMembers()
         for memberIndex = 1, memberCount-1 do
-            self:Debug("party"..memberIndex.." of "..memberCount-1)
+            --self:Debug("party"..memberIndex.." of "..memberCount-1)
             local name, realm = UnitName("party"..memberIndex)
-            self:Debug("Adding player '"..name.."'")
+            --self:Debug("Adding player '"..name.."'")
             dungeonLog:EnsurePlayerExists(name)
         end
     end
 end
 
 function DT:AddDungeonLog(dateTimeStamp, mapid, zone)
-    dungeonId = dateTimeStamp.."_"..mapid
+    local dungeonId = dateTimeStamp.."_"..mapid
     self.DungeonId = dungeonId;
     self.LastDungeonZone = zone
     self.LastDungeonId = dungeonId
@@ -436,7 +458,7 @@ end
 function DT:UPDATE_INSTANCE_INFO()
     -- Check if it is a dungeon or raid 
     -- Create a new instance run if one is not already going
-    local zone, zonetype, difficultyIndex, difficultyName, maxPlayers, dynamicDifficulty, isDynamic, mapid = GetInstanceInfo()
+    local zone, zonetype, _, _, _, _, _, mapid = GetInstanceInfo()
     if not zone then return end
     if zone == self.LastZone then
         -- do nothing if the zone hasn't ACTUALLY changed
@@ -463,7 +485,7 @@ function DT:UPDATE_INSTANCE_INFO()
         self:AddDungeonLog(dateTimeStamp, mapid, zone)
         return
     end
-    if self.DungeonId ~= null then
+    if self.DungeonId ~= nil then
         local dungeonLog = self:ActiveDungeon()
         self:Print("Finish ("..dungeonLog.instance..") - "..dateTimeStamp)
         dbGlobal.dungeonLog[self.DungeonId].timeEnd = GetServerTime()
@@ -531,6 +553,7 @@ function DT:GetDataTable()
     return t
 end
 
+local scroll = nil
 function DT:UpdateLog()
 	local buttons = HybridScrollFrame_GetButtons(scroll);
 	local offset = HybridScrollFrame_GetOffset(scroll);
@@ -735,7 +758,7 @@ function DT:ShowLog()
 	btn:SetText("Gold")
 	tableHeader:AddChild(btn)
 
-	scrollcontainer = AceGUI:Create("SimpleGroup")
+	local scrollcontainer = AceGUI:Create("SimpleGroup")
 	scrollcontainer:SetFullWidth(true)
 	scrollcontainer:SetHeight(390)
 	scrollcontainer:SetLayout("Fill")

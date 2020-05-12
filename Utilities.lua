@@ -127,6 +127,19 @@ function DT_GetDateString(dateTime)
     return date("%Y-%m-%d %H:%M:%S", dateTime)
 end
 
+function DT_GetRelativeDateString(dateTime, relativeTo)
+    local day = date("%A", dateTime)
+    local hour = date("%I", dateTime):match("0*(%d+)")
+
+    if date("%x", dateTime) == date("%x", relativeTo) then
+        day = "Today"
+    elseif date("%x", dateTime) == date("%x", relativeTo+86400) then
+        day = "Tomorrow"
+    end
+
+    return day.." @ "..hour.."am"
+end
+
 function DT_GetTimeParts(s)
 	local days = 0
 	local hours = 0
@@ -167,7 +180,7 @@ end
 function DT_ColoriseByClass(textValue, className)
     if not className then return textValue end
 
-    classColour = RAID_CLASS_COLORS[string.upper(className)]
+    local classColour = RAID_CLASS_COLORS[string.upper(className)]
     if not classColour then return textValue end
 
     textValue = ("|cFF%02X%02X%02X%s|r"):format(classColour.r * 255, classColour.g * 255, classColour.b * 255, textValue)

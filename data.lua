@@ -468,7 +468,7 @@ DTInstanceInfo = {
             [DTColours.Grey] = 40
         }
     },
-    ["Scarlet Monastery - Graveyard"] = {
+    ["Scarlet Monastery"] = {
         shortName = "SM",
         instanceId = 189,
         encounters = {
@@ -1644,4 +1644,56 @@ DTInstanceInfo = {
             [DTColours.Grey] = 60
         }
     }
+}
+
+DTRaidInfo = {
+    ["Molten Core"] = {
+        shortName = "MC",
+        name = "Molten Core",
+        resetTime = 604800,
+        resetStart = 1566921600,
+        firstOpen = 1566921600  -- August 26th 2019
+    },
+    ["Onyxia's Lair"] = {
+        shortName = "Ony",
+        name = "Onyxia's Lair",
+        resetTime = 432000,
+        resetStart = 1567008000,
+        firstOpen = 1567008000  -- August 26th 2019
+    },
+    ["Blackwing Lair"] = {
+        shortName = "BWL",
+        name = "Blackwing Lair",
+        resetTime = 604800,
+        resetStart = 1581440400,
+        firstOpen = 1581440400  -- February 12th 2020
+    },
+    ["Zul'Gurub"] = {
+        shortName = "ZG",
+        name = "Zul'Gurub",
+        resetTime = 259200,
+        resetStart = 1584460800,
+        firstOpen = 1584309600
+    },
+    ["The Ruins of AhnQiraj"] = {
+        shortName = "AQ20",
+        name = "The Ruins of AhnQiraj",
+        resetTime = 259200,
+        resetStart = 0,
+        firstOpen = 0
+    },
+    ["The Temple of AhnQiraj"] = {
+        shortName = "AQ40",
+        name = "The Temple of AhnQiraj",
+        resetTime = 604800,
+        resetStart = 0,
+        firstOpen = 0
+    },
+    ["Naxxramas"] = {
+        shortName = "Naxx",
+        name = "Naxxramas",
+        resetTime = 604800,
+        resetStart = 0,
+        firstOpen = 0
+    },
 }
